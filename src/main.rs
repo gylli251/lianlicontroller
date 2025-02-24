@@ -5,7 +5,6 @@ use thiserror::Error;
 use clap::{Parser, ValueEnum};
 use serde::Deserialize;
 use std::fs;
-use std::path::Path;
 use nvml_wrapper::Nvml;
 use nvml_wrapper::enum_wrappers::device::TemperatureSensor;
 
@@ -213,11 +212,10 @@ impl FanController {
                     self.set_fan_speed(fan, speed)?;
                 }
                 FanMode::QuietCpu => {
-                    // Placeholder: CPU temp not reliably available via sysinfo, using 50°C
-                    let cpu_temp = 50.0;
+                    let cpu_temp = get_cpu_temp()?;
                     let rpm = map_temp_to_rpm(cpu_temp);
                     self.set_fan_speed(fan, rpm)?;
-                    println!("Fan {} synced to CPU temp {:.1}°C (placeholder) -> {} RPM", fan, cpu_temp, rpm);
+                    println!("Fan {} synced to CPU temp {:.1}°C -> {} RPM", fan, cpu_temp, rpm);
                 }
                 FanMode::QuietGpu => {
                     let gpu_temp = get_gpu_temp()?;
@@ -255,6 +253,22 @@ fn map_temp_to_rpm(temp: f32) -> u16 {
     rpm.round() as u16
 }
 
+// Get CPU temperature from /sys/class/thermal (Linux only)
+fn get_cpu_temp() -> Result<f32, FanControlError> {
+    for zone in 0..=9 { // Check thermal_zone0 to thermal_zone9
+        let temp_path = format!("/sys/class/thermal/thermal_zone{}/temp", zone);
+        if let Ok(temp_str) = fs::read_to_string(&temp_path) {
+            if let Ok(temp_millidegrees) = temp_str.trim().parse::<i32>() {
+                let temp = temp_millidegrees as f32 / 1000.0; // Convert millidegrees to degrees
+                println!("Detected CPU temperature: {}°C from {}", temp, temp_path);
+                return Ok(temp);
+            }
+        }
+    }
+    println!("No CPU temperature detected, using fallback 50°C");
+    Ok(50.0) // Fallback if no temp available
+}
+
 // Detect GPU type and read temperature (Linux only)
 fn get_gpu_temp() -> Result<f32, FanControlError> {
     // Try NVIDIA via NVML
@@ -267,13 +281,13 @@ fn get_gpu_temp() -> Result<f32, FanControlError> {
     }
 
     // Try AMD via /sys/class/drm
-    for card in 0..=4 { // Check card0 to card4
+    for card in 0..=4 {
         let temp_path = format!("/sys/class/drm/card{}/device/hwmon/hwmon*/temp1_input", card);
         if let Ok(entries) = glob::glob(&temp_path) {
             for entry in entries.flatten() {
                 if let Ok(temp_str) = fs::read_to_string(&entry) {
                     if let Ok(temp_millidegrees) = temp_str.trim().parse::<i32>() {
-                        let temp = temp_millidegrees as f32 / 1000.0; // Convert millidegrees to degrees
+                        let temp = temp_millidegrees as f32 / 1000.0;
                         println!("Detected AMD GPU, temperature: {}°C", temp);
                         return Ok(temp);
                     }
