@@ -1,0 +1,13 @@
+[package]
+name = "lianlicontroller"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hidapi = "2.6.0"
+thiserror = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+sysinfo = "0.30"
+nvml-wrapper = "0.10"

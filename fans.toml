@@ -1,0 +1,4 @@
+color = "#FF0505"  # Green
+brightness = 100.0
+speed = 805
+mode = "quiet-cpu" # Ignores speed value
