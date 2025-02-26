@@ -26,15 +26,10 @@ A Rust-based daemon for controlling Lian Li UNI FAN SL-INF fans (VID: 0x0cf2, PI
 - libusb development files
 - Systemd (Linux only)
 
-    # Example for Ubuntu/Debian
-    sudo apt update
-    sudo apt install build-essential libudev-dev libusb-1.0-0-dev
-
-    # Clone and install
-    git clone https://github.com/yourusername/lian-li-fan-controller.git
-    cd lian-li-fan-controller
-    ./install.sh
-
+# Clone and install
+git clone https://github.com/yourusername/lian-li-fan-controller.git
+cd lian-li-fan-controller
+./install.sh
 
 --------------------------------------------------
 
