@@ -1,0 +1,17 @@
+# Rust-specific ignores
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Backup files from your project
+*.backup
+
+# Common OS and editor files
+.DS_Store
+*.swp
+*~
+.#*
+*.log
+
+# Optional: Ignore local config files (if not meant to be versioned)
+# fans.toml
