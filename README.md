@@ -18,7 +18,6 @@ A Rust-based daemon for controlling Lian Li UNI FAN SL-INF fans (VID: 0x0cf2, PI
 
 --------------------------------------------------
 
-```
 # Installation
 
 ### Prerequisites
@@ -35,11 +34,10 @@ A Rust-based daemon for controlling Lian Li UNI FAN SL-INF fans (VID: 0x0cf2, PI
     git clone https://github.com/yourusername/lian-li-fan-controller.git
     cd lian-li-fan-controller
     ./install.sh
-```
+
 
 --------------------------------------------------
 
-```
 # Configuration
 
 ### Config File
@@ -50,11 +48,10 @@ By default, the daemon reads /etc/lianlicontroller/fans.toml:
     brightness = 100.0   # 0-100%
     speed = 1350         # 805-1900 RPM (only used if mode = "fixed")
     mode = "quietgpu"    # Options: fixed, quietcpu, quietgpu
-```
+
 
 --------------------------------------------------
 
-```
 # CLI Options
 
     lianlicontroller \
@@ -71,11 +68,9 @@ By default, the daemon reads /etc/lianlicontroller/fans.toml:
 --speed (805-1900): Target RPM (if mode is fixed)
 --mode: fixed | quietcpu | quietgpu
 --config: Provide a specific TOML config file
-```
 
 --------------------------------------------------
 
-```
 # Usage
 
 ### Service Management
@@ -91,11 +86,9 @@ By default, the daemon reads /etc/lianlicontroller/fans.toml:
 
     # View logs
     journalctl -u lianlicontroller -f
-```
 
 --------------------------------------------------
 
-```
 # Example Scenarios
 
 ### Fixed Color/Speed Mode
@@ -108,11 +101,9 @@ By default, the daemon reads /etc/lianlicontroller/fans.toml:
     color = "#00FF00"
     brightness = 50
     mode = "quietcpu"
-```
 
 --------------------------------------------------
 
-```
 # Troubleshooting
 
 ### Device Not Found
@@ -128,11 +119,9 @@ By default, the daemon reads /etc/lianlicontroller/fans.toml:
 - Validate TOML syntax with tools like tomlv.
 - Ensure color values are valid hex codes.
 - Verify RPM values are within the 805-1900 range.
-```
 
 --------------------------------------------------
 
-```
 # Uninstallation
 
     sudo systemctl stop lianlicontroller
@@ -141,22 +130,18 @@ By default, the daemon reads /etc/lianlicontroller/fans.toml:
              /etc/systemd/system/lianlicontroller.service \
              /etc/lianlicontroller/fans.toml
     sudo systemctl daemon-reload
-```
 
 --------------------------------------------------
 
-```
 # License
 
 MIT License – see LICENSE for details.
-```
 
 --------------------------------------------------
 
-```
 # Acknowledgments
 
 - hidapi-rs for USB HID communication
 - NVML Wrapper for NVIDIA GPU monitoring
 - sysinfo for system temperature data
-```
+
