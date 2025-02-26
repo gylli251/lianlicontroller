@@ -27,9 +27,9 @@ A Rust-based daemon for controlling Lian Li UNI FAN SL-INF fans (VID: 0x0cf2, PI
 - Systemd (Linux only)
 
 # Clone and install
-git clone https://github.com/gylli251/lian-li-fan-controller.git
-cd lian-li-fan-controller
-./install.sh
+- git clone https://github.com/gylli251/lian-li-fan-controller.git
+- cd lian-li-fan-controller
+- ./install.sh
 
 --------------------------------------------------
 
