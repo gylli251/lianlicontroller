@@ -7,13 +7,14 @@ use serde::Deserialize;
 use std::fs;
 use nvml_wrapper::Nvml;
 use nvml_wrapper::enum_wrappers::device::TemperatureSensor;
+use sysinfo::{Components};
 
 const VENDOR_ID: u16 = 0x0cf2;
 const PRODUCT_ID: u16 = 0xa100;
 const FAN_COUNT: u8 = 4;
 const COLOR_BUFFER_SIZE: usize = 353;
 const LEDS_PER_FAN: usize = 117;
-const MIN_RPM: u16 = 805; // Adjusted from 800
+const MIN_RPM: u16 = 805;
 const MAX_RPM: u16 = 1900;
 
 #[derive(Error, Debug)]
@@ -67,8 +68,8 @@ struct Args {
     speed: u16,
     #[arg(long, help = "Fan mode: fixed, quiet-cpu, quiet-gpu", default_value = "fixed")]
     mode: FanMode,
-    #[arg(long, help = "Path to config file (overrides CLI args if present)")]
-    config: Option<String>,
+    #[arg(long, help = "Path to config file (default: /etc/lianlicontroller/fans.toml)", default_value = "/etc/lianlicontroller/fans.toml")]
+    config: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -81,7 +82,7 @@ struct Config {
     blue: Option<u8>,
     #[serde(default)]
     color: Option<String>,
-    brightness: f32,
+    brightness: Option<f32>,
     #[serde(default = "default_speed")]
     speed: u16,
     #[serde(default)]
@@ -151,7 +152,7 @@ impl FanController {
         let scaled_g = (g as f32 * brightness_factor).min(255.0) as u8;
         let scaled_b = (b as f32 * brightness_factor).min(255.0) as u8;
 
-        let colors = [scaled_r, scaled_b, scaled_g]; // Hardcoded to RBG order (Red, Blue, Green)
+        let colors = [scaled_r, scaled_b, scaled_g]; // Hardcoded to RBG order
 
         for _ in 0..LEDS_PER_FAN {
             buf.extend_from_slice(&colors);
@@ -187,15 +188,13 @@ impl FanController {
             return Err(FanControlError::InvalidSpeed(speed));
         }
 
-        // Disable PWM mode (set to Manual mode) for this fan
         let channel_byte = 0x10 << fan;
         self.device.write(&[0xe0, 0x10, 0x31, channel_byte])?;
         println!("Set fan {} to Manual mode", fan);
         sleep(Duration::from_millis(200));
 
-        // Convert RPM to speed byte (805-1900 RPM maps to 0-255)
         let speed_range = (MAX_RPM - MIN_RPM) as f32; // 1095
-        let speed_value = clamped_speed - MIN_RPM; // Offset from minimum
+        let speed_value = clamped_speed - MIN_RPM;
         let speed_byte = ((speed_value as f32 / speed_range) * 255.0).min(255.0) as u8;
         self.device.write(&[0xe0, (fan + 32) as u8, 0x00, speed_byte])?;
         println!("Set fan {} speed to {} RPM", fan, clamped_speed);
@@ -204,7 +203,7 @@ impl FanController {
         Ok(())
     }
 
-    fn set_all_fans(&self, r: u8, g: u8, b: u8, brightness: f32, speed: u16, mode: FanMode) -> Result<(), FanControlError> {
+    fn set_all_fans(&self, r: u8, g: u8, b: u8, brightness: f32, speed: u16, mode: &FanMode) -> Result<(), FanControlError> {
         for fan in 0..FAN_COUNT {
             self.set_fan_color(fan, r, g, b, brightness)?;
             match mode {
@@ -244,34 +243,64 @@ fn parse_hex_color(hex: &str) -> Result<(u8, u8, u8), FanControlError> {
     Ok((r, g, b))
 }
 
-// Map temperature to RPM for quiet modes (linear: 30°C -> 805 RPM, 80°C -> 1900 RPM)
 fn map_temp_to_rpm(temp: f32) -> u16 {
-    let temp = temp.clamp(30.0, 80.0);
-    let temp_range = 80.0 - 30.0; // 50°C
-    let rpm_range = (MAX_RPM - MIN_RPM) as f32; // 1095 RPM
-    let rpm = MIN_RPM as f32 + ((temp - 30.0) / temp_range) * rpm_range;
-    rpm.round() as u16
+    if temp <= 60.0 {
+        805  // Minimum RPM for quiet operation
+    } else if temp <= 80.0 {
+        let temp_range = 80.0 - 60.0; // 20°C
+        let rpm_range = 1000 - 805;   // 195 RPM
+        let rpm = 805.0 + ((temp - 60.0) / temp_range) * rpm_range as f32;
+        rpm.round() as u16
+    } else if temp <= 95.0 {
+        let temp_range = 95.0 - 80.0; // 15°C
+        let rpm_range = 1900 - 1000;  // 900 RPM
+        let rpm = 1000.0 + ((temp - 80.0) / temp_range) * rpm_range as f32;
+        rpm.round() as u16
+    } else {
+        1900  // Maximum RPM for extreme temperatures
+    }
 }
 
-// Get CPU temperature from /sys/class/thermal (Linux only)
 fn get_cpu_temp() -> Result<f32, FanControlError> {
-    for zone in 0..=9 { // Check thermal_zone0 to thermal_zone9
-        let temp_path = format!("/sys/class/thermal/thermal_zone{}/temp", zone);
-        if let Ok(temp_str) = fs::read_to_string(&temp_path) {
-            if let Ok(temp_millidegrees) = temp_str.trim().parse::<i32>() {
-                let temp = temp_millidegrees as f32 / 1000.0; // Convert millidegrees to degrees
-                println!("Detected CPU temperature: {}°C from {}", temp, temp_path);
-                return Ok(temp);
+    let mut components = Components::new_with_refreshed_list();
+    components.refresh(true);
+
+    let cpu_labels = ["tctl", "cpu", "core", "package", "tdie", "smbusmaster"];
+    let mut cpu_temps: Vec<f32> = Vec::new();
+    for component in components.iter() {
+        let label = component.label().to_lowercase();
+        for &cpu_label in &cpu_labels {
+            if label.contains(cpu_label) {
+                if let Some(temp) = component.temperature() {
+                    if temp > 0.0 {
+                        cpu_temps.push(temp);
+                    }
+                }
             }
         }
     }
-    println!("No CPU temperature detected, using fallback 50°C");
-    Ok(50.0) // Fallback if no temp available
+
+    if !cpu_temps.is_empty() {
+        let max_temp = cpu_temps.iter().fold(f32::MIN, |a, &b| a.max(b));
+        println!("Detected CPU temperature: {:.1}°C", max_temp);
+        Ok(max_temp)
+    } else {
+        let max_temp = components.iter()
+            .filter_map(|c| c.temperature())
+            .filter(|&t| t > 0.0)
+            .fold(f32::MIN, |a, b| a.max(b));
+
+        if max_temp > f32::MIN {
+            println!("No CPU sensors found; using highest temp: {:.1}°C", max_temp);
+            Ok(max_temp)
+        } else {
+            println!("No valid temperatures detected; defaulting to 50°C");
+            Ok(50.0)
+        }
+    }
 }
 
-// Detect GPU type and read temperature (Linux only)
 fn get_gpu_temp() -> Result<f32, FanControlError> {
-    // Try NVIDIA via NVML
     if let Ok(nvml) = Nvml::init() {
         if let Ok(device) = nvml.device_by_index(0) {
             let temp = device.temperature(TemperatureSensor::Gpu)?;
@@ -280,7 +309,6 @@ fn get_gpu_temp() -> Result<f32, FanControlError> {
         }
     }
 
-    // Try AMD via /sys/class/drm
     for card in 0..=4 {
         let temp_path = format!("/sys/class/drm/card{}/device/hwmon/hwmon*/temp1_input", card);
         if let Ok(entries) = glob::glob(&temp_path) {
@@ -297,31 +325,65 @@ fn get_gpu_temp() -> Result<f32, FanControlError> {
     }
 
     println!("No GPU temperature detected, using fallback 50°C");
-    Ok(50.0) // Fallback if no GPU temp available
+    Ok(50.0)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let (r, g, b, brightness, speed, mode) = match args.config {
-        Some(ref config_path) => {
-            let contents = fs::read_to_string(config_path)?;
-            let config: Config = toml::from_str(&contents)?;
-            let (r, g, b) = match config.color {
-                Some(hex) => parse_hex_color(&hex)?,
-                None => (
-                    config.red.unwrap_or(255),
-                    config.green.unwrap_or(5),
-                    config.blue.unwrap_or(5),
-                ),
-            };
-            (r, g, b, config.brightness, config.speed, config.mode)
+
+    // Load config file if it exists, otherwise use CLI defaults
+    let (r, g, b, brightness, speed, mode) = match fs::read_to_string(&args.config) {
+        Ok(contents) => {
+            match toml::from_str::<Config>(&contents) {
+                Ok(config) => {
+                    let (r, g, b) = match config.color {
+                        Some(hex) => parse_hex_color(&hex)?,
+                        None => (
+                            config.red.unwrap_or(args.red),
+                            config.green.unwrap_or(args.green),
+                            config.blue.unwrap_or(args.blue),
+                        ),
+                    };
+                    (
+                        r,
+                        g,
+                        b,
+                        config.brightness.unwrap_or(args.brightness),
+                        config.speed,
+                        config.mode,
+                    )
+                }
+                Err(e) => {
+                    println!("Failed to parse config file '{}': {}. Using CLI defaults.", args.config, e);
+                    (args.red, args.green, args.blue, args.brightness, args.speed, args.mode)
+                }
+            }
         }
-        None => (args.red, args.green, args.blue, args.brightness, args.speed, args.mode),
+        Err(e) => {
+            println!("No config file found at '{}': {}. Using CLI defaults.", args.config, e);
+            (args.red, args.green, args.blue, args.brightness, args.speed, args.mode)
+        }
     };
 
     let controller = FanController::open()?;
     controller.send_init()?;
-    controller.set_all_fans(r, g, b, brightness, speed, mode)?;
-    sleep(Duration::from_millis(100));
+
+    for fan in 0..FAN_COUNT {
+        controller.set_fan_color(fan, r, g, b, brightness)?;
+    }
+
+    loop {
+        match &mode {
+            FanMode::Fixed => {
+                controller.set_all_fans(r, g, b, brightness, speed, &mode)?;
+                break;
+            }
+            FanMode::QuietCpu | FanMode::QuietGpu => {
+                controller.set_all_fans(r, g, b, brightness, speed, &mode)?;
+                sleep(Duration::from_secs(5));
+            }
+        }
+    }
+
     Ok(())
 }

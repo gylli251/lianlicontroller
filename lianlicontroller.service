@@ -1,0 +1,10 @@
+[Unit]
+Description=Lian Li Controller Service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/lianlicontroller --config /etc/lianlicontroller/fans.toml
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
