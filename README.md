@@ -145,3 +145,10 @@ MIT License – see LICENSE for details.
 - NVML Wrapper for NVIDIA GPU monitoring
 - sysinfo for system temperature data
 
+--------------------------------------------------
+
+# TODO
+
+- Support more lian li fans?
+- set color for individual zones.
+
