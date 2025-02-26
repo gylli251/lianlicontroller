@@ -14,7 +14,7 @@ A Rust-based daemon for controlling Lian Li UNI FAN SL-INF fans (VID: 0x0cf2, PI
   - Quiet GPU Mode: Syncs fan speeds with GPU temperature
 - Configuration file support (TOML format)
 - Systemd service integration for background operation
-- Automatic detection of NVIDIA/AMD GPU temperatures
+- Automatic detection of NVIDIA/AMD GPU temperatures (AMD NEEDS TESTING)
 
 --------------------------------------------------
 
