@@ -58,11 +58,11 @@ By default, the daemon reads /etc/lianlicontroller/fans.toml:
       --mode quietgpu \
       --config /path/to/config.toml
 
---red, --green, --blue (0-255): Color components
---brightness (0-100): RGB brightness percentage
---speed (805-1900): Target RPM (if mode is fixed)
---mode: fixed | quietcpu | quietgpu
---config: Provide a specific TOML config file
+    --red, --green, --blue (0-255): Color components
+    --brightness (0-100): RGB brightness percentage
+    --speed (805-1900): Target RPM (if mode is fixed)
+    --mode: fixed | quietcpu | quietgpu
+    --config: Provide a specific TOML config file
 
 --------------------------------------------------
 
