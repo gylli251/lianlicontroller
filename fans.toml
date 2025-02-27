@@ -1,4 +1,18 @@
-color = "#FF0505"  # Green
+[global]
+color = "#FF0000"  # Default to red
 brightness = 100.0
-speed = 800
-mode = "quietgpu" # Ignores speed value
+speed = 1350 # THIS ONLY WORKS WITH FIXED
+mode = "quietgpu"
+log_level = "debug"
+
+[zone_0]
+enabled = true
+
+[zone_1]
+enabled = true
+
+[zone_2]
+enabled = false
+
+[zone_3]
+enabled = false

@@ -1,20 +1,30 @@
 # Lian Li Fan Controller
 
-A Rust-based daemon for controlling Lian Li UNI FAN SL-INF fans (VID: 0x0cf2, PID: 0xa100). Manage RGB lighting, fan speeds, and create temperature-based profiles through CLI or a config file.
+A Rust-based daemon for controlling Lian Li UNI FAN SL-INF fans. Manage RGB lighting, fan speeds, and create temperature-based profiles through CLI or a config file.
 
 [![Rust](https://img.shields.io/badge/Rust-1.60%2B-blue?logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ## Features
 
-- 🎨 Set RGB colors and brightness for all fans
-- 🌀 Control fan speeds in RPM (805-1900 range)
+- 🎨 Set RGB colors and brightness for all fans or based on zone
+- 🌀 Control fan speeds in RPM
 - 🌡️ Temperature-based speed control modes:
   - Quiet CPU Mode: Dynamically adjusts speeds based on CPU temperature
   - Quiet GPU Mode: Syncs fan speeds with GPU temperature
 - Configuration file support (TOML format)
 - Systemd service integration for background operation
 - Automatic detection of NVIDIA/AMD GPU temperatures (AMD NEEDS TESTING)
+
+## Device Support
+
+| Device                 | PID          | Status    | Set Fan RPM | Set Color    |
+|------------------------|--------------|-----------|-------------|--------------|
+| LianLi-UNI SL          | `7750, a100` | Supported | ✔️          | ✔️           | 
+| LianLi-UNI AL          | `a101`       | Untested  | ❓          | ❓           | 
+| LianLi-UNI SL-Infinity | `a102`       | Untested  | ❓          | ❓           | 
+| LianLi-UNI SL v2       | `a103, a105` | Untested  | ❓          | ❓           | 
+| LianLi-UNI AL v2       | `a104`       | Untested  | ❓          | ❓           | 
 
 --------------------------------------------------
 
@@ -39,10 +49,24 @@ A Rust-based daemon for controlling Lian Li UNI FAN SL-INF fans (VID: 0x0cf2, PI
 
 By default, the daemon reads /etc/lianlicontroller/fans.toml:
 
-    color = "#FF0505"    # Hex color code
-    brightness = 100.0   # 0-100%
-    speed = 1350         # 805-1900 RPM (only used if mode = "fixed")
-    mode = "quietgpu"    # Options: fixed, quietcpu, quietgpu
+   [global]
+   color = "#FF0000"  # Default to red
+   brightness = 100.0
+   speed = 1350 # THIS ONLY WORKS WITH FIXED
+   mode = "quietgpu"
+   log_level = "debug"
+
+   [zone_0]
+   enabled = true
+
+   [zone_1]
+   enabled = true
+
+   [zone_2]
+   enabled = false
+
+   [zone_3]
+   enabled = false
 
 
 --------------------------------------------------
@@ -93,9 +117,24 @@ By default, the daemon reads /etc/lianlicontroller/fans.toml:
 ### CPU Temperature-Based Control
 
     # fans.toml
-    color = "#00FF00"
-    brightness = 50
-    mode = "quietcpu"
+   [global]
+   color = "#FF0000"  # Default to red
+   brightness = 100.0
+   speed = 1350 # THIS ONLY WORKS WITH FIXED
+   mode = "quietgpu"
+   log_level = "debug"
+
+   [zone_0]
+   enabled = true
+
+   [zone_1]
+   enabled = true
+
+   [zone_2]
+   enabled = false
+
+   [zone_3]
+   enabled = false
 
 --------------------------------------------------
 

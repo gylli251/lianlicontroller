@@ -7,15 +7,19 @@ use serde::Deserialize;
 use std::fs;
 use nvml_wrapper::Nvml;
 use nvml_wrapper::enum_wrappers::device::TemperatureSensor;
-use sysinfo::{Components};
+use sysinfo::Components;
+use log::{info, error, warn, debug, LevelFilter};
+use env_logger::Builder;
 
+// Constants
 const VENDOR_ID: u16 = 0x0cf2;
-const PRODUCT_ID: u16 = 0xa100;
+const SUPPORTED_PRODUCT_IDS: [u16; 7] = [0x7750, 0xa100, 0xa101, 0xa102, 0xa103, 0xa104, 0xa105];
 const FAN_COUNT: u8 = 4;
 const COLOR_BUFFER_SIZE: usize = 353;
 const LEDS_PER_FAN: usize = 117;
-const MIN_RPM: u16 = 805;
-const MAX_RPM: u16 = 1900;
+const REPORT_ID: u8 = 0xe0;
+const SET_COLOR_CMD_BASE: u8 = 0x30;
+const SET_SPEED_CMD: u8 = 0x10;
 
 #[derive(Error, Debug)]
 enum FanControlError {
@@ -27,8 +31,8 @@ enum FanControlError {
     InvalidFan(u8),
     #[error("Invalid brightness: {0}")]
     InvalidBrightness(f32),
-    #[error("Invalid speed: {0} RPM (must be between {} and {})", MIN_RPM, MAX_RPM)]
-    InvalidSpeed(u16),
+    #[error("Invalid speed: {0} RPM (must be between {1} and {2})")]
+    InvalidSpeed(u16, u16, u16),
     #[error("Config file error: {0}")]
     ConfigError(#[from] std::io::Error),
     #[error("TOML parsing error: {0}")]
@@ -54,7 +58,7 @@ impl Default for FanMode {
 }
 
 #[derive(Parser, Debug)]
-#[command(about = "Control Lian Li fan colors, brightness, and speed (RPM or quiet modes)")]
+#[command(about = "Control Lian Li fan colors, brightness, and speed")]
 struct Args {
     #[arg(long, help = "Red value (0-255)", default_value_t = 255)]
     red: u8,
@@ -64,75 +68,125 @@ struct Args {
     blue: u8,
     #[arg(long, help = "Brightness percentage (0-100)", default_value_t = 100.0)]
     brightness: f32,
-    #[arg(long, help = "Fan speed in RPM (805-1900), ignored if mode is quiet-cpu or quiet-gpu", default_value_t = 1350)]
+    #[arg(long, help = "Fan speed in RPM", default_value_t = 1350)]
     speed: u16,
     #[arg(long, help = "Fan mode: fixed, quiet-cpu, quiet-gpu", default_value = "fixed")]
     mode: FanMode,
-    #[arg(long, help = "Path to config file (default: /etc/lianlicontroller/fans.toml)", default_value = "/etc/lianlicontroller/fans.toml")]
+    #[arg(long, help = "Path to config file", default_value = "/etc/lianlicontroller/fans.toml")]
     config: String,
+    #[arg(long, help = "Log level (error, warn, info, debug, trace)", default_value = "info")]
+    log_level: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct GlobalConfig {
+    color: Option<String>,
+    red: Option<u8>,
+    green: Option<u8>,
+    blue: Option<u8>,
+    brightness: Option<f32>,
+    speed: Option<u16>,
+    mode: Option<FanMode>,
+    log_level: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct ZoneConfig {
+    enabled: Option<bool>,
+    color: Option<String>,
+    red: Option<u8>,
+    green: Option<u8>,
+    blue: Option<u8>,
+    brightness: Option<f32>,
+    speed: Option<u16>,
+    mode: Option<FanMode>,
 }
 
 #[derive(Deserialize, Debug)]
 struct Config {
-    #[serde(default)]
-    red: Option<u8>,
-    #[serde(default)]
-    green: Option<u8>,
-    #[serde(default)]
-    blue: Option<u8>,
-    #[serde(default)]
-    color: Option<String>,
-    brightness: Option<f32>,
-    #[serde(default = "default_speed")]
+    global: Option<GlobalConfig>,
+    zone_0: Option<ZoneConfig>,
+    zone_1: Option<ZoneConfig>,
+    zone_2: Option<ZoneConfig>,
+    zone_3: Option<ZoneConfig>,
+}
+
+struct EffectiveZoneSettings {
+    r: u8,
+    g: u8,
+    b: u8,
+    brightness: f32,
     speed: u16,
-    #[serde(default)]
     mode: FanMode,
 }
 
-fn default_speed() -> u16 { 1350 }
+struct ModelConfig {
+    mode_byte: u8,
+    sync_byte: u8,
+    min_rpm: u16,
+    max_rpm: u16,
+}
+
+fn get_model_config(product_id: u16) -> ModelConfig {
+    match product_id {
+        0xa100 | 0x7750 => ModelConfig { mode_byte: 49, sync_byte: 48, min_rpm: 800, max_rpm: 1900 },
+        0xa101 => ModelConfig { mode_byte: 66, sync_byte: 65, min_rpm: 800, max_rpm: 1900 },
+        0xa102 => ModelConfig { mode_byte: 98, sync_byte: 97, min_rpm: 200, max_rpm: 2100 },
+        0xa103 | 0xa105 => ModelConfig { mode_byte: 98, sync_byte: 97, min_rpm: 250, max_rpm: 2000 },
+        0xa104 => ModelConfig { mode_byte: 98, sync_byte: 97, min_rpm: 250, max_rpm: 2000 },
+        _ => ModelConfig { mode_byte: 49, sync_byte: 48, min_rpm: 800, max_rpm: 1900 },
+    }
+}
 
 struct FanController {
     device: HidDevice,
+    product_id: u16,
+    model_config: ModelConfig,
 }
 
 impl FanController {
     fn open() -> Result<Self, FanControlError> {
         let api = HidApi::new()?;
-        match api.open(VENDOR_ID, PRODUCT_ID) {
-            Ok(device) => {
-                println!("Connected to device VID:{:04x} PID:{:04x}", VENDOR_ID, PRODUCT_ID);
-                Ok(FanController { device })
-            }
-            Err(e) => {
-                if e.to_string().contains("device not found") {
-                    Err(FanControlError::DeviceNotFound)
-                } else {
-                    Err(FanControlError::HidApi(e))
-                }
+        for &pid in &SUPPORTED_PRODUCT_IDS {
+            debug!("Attempting to open device VID:{:04x} PID:{:04x}", VENDOR_ID, pid);
+            match api.open(VENDOR_ID, pid) {
+                Ok(device) => {
+                    let model_config = get_model_config(pid);
+                    info!("Connected to device VID:{:04x} PID:{:04x} (RPM range: {}-{})",
+                          VENDOR_ID, pid, model_config.min_rpm, model_config.max_rpm);
+                    return Ok(FanController { device, product_id: pid, model_config });
+                },
+                Err(e) => {
+                    warn!("Failed to open device VID:{:04x} PID:{:04x}: {}", VENDOR_ID, pid, e);
+                    continue;
+                },
             }
         }
+        error!("No supported device found");
+        Err(FanControlError::DeviceNotFound)
     }
 
     fn send_init(&self) -> Result<(), FanControlError> {
         let init_commands = [
-            [0xe0, 0x50, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            [0xe0, 0x10, 0x32, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            [0xe0, 0x10, 0x32, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            [0xe0, 0x10, 0x32, 0x23, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            [0xe0, 0x10, 0x32, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [REPORT_ID, 0x50, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [REPORT_ID, SET_SPEED_CMD, 0x32, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [REPORT_ID, SET_SPEED_CMD, 0x32, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [REPORT_ID, SET_SPEED_CMD, 0x32, 0x23, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [REPORT_ID, SET_SPEED_CMD, 0x32, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
         ];
 
+        info!("Initializing device");
         for cmd in &init_commands {
+            debug!("Sending init command: {:02x?}", cmd);
             self.device.send_feature_report(cmd)?;
-            println!("Sent init command: {:02x?}", cmd);
             sleep(Duration::from_millis(100));
         }
 
         let mut buf = [0u8; 65];
-        buf[0] = 0xe0;
+        buf[0] = REPORT_ID;
         match self.device.get_feature_report(&mut buf) {
-            Ok(bytes_read) => println!("Read {} bytes after init: {:02x?}", bytes_read, &buf[..bytes_read]),
-            Err(e) => println!("Failed to read feature report: {}. Skipping...", e),
+            Ok(bytes_read) => debug!("Read {} bytes after init: {:02x?}", bytes_read, &buf[..bytes_read]),
+            Err(e) => warn!("Failed to read feature report: {}. Skipping...", e),
         }
         sleep(Duration::from_millis(100));
         Ok(())
@@ -146,36 +200,33 @@ impl FanController {
             return Err(FanControlError::InvalidBrightness(brightness));
         }
 
-        let mut buf = vec![0xe0, 0x30 + fan];
+        let mut buf = vec![REPORT_ID, SET_COLOR_CMD_BASE + fan];
         let brightness_factor = brightness / 100.0;
         let scaled_r = (r as f32 * brightness_factor).min(255.0) as u8;
         let scaled_g = (g as f32 * brightness_factor).min(255.0) as u8;
         let scaled_b = (b as f32 * brightness_factor).min(255.0) as u8;
 
-        let colors = [scaled_r, scaled_b, scaled_g]; // Hardcoded to RBG order
-
+        let colors = [scaled_r, scaled_b, scaled_g]; // RBG order for Lian Li
         for _ in 0..LEDS_PER_FAN {
             buf.extend_from_slice(&colors);
         }
         buf.resize(COLOR_BUFFER_SIZE, 0x00);
 
+        debug!("Setting zone {} to RGB({},{},{}) at {:.0}% brightness", fan, scaled_r, scaled_g, scaled_b, brightness);
         self.device.write(&buf)?;
-        println!(
-            "Set fan {} to RGB({},{},{}) at {:.0}% brightness",
-            fan, scaled_r, scaled_g, scaled_b, brightness
-        );
         sleep(Duration::from_millis(100));
 
         let confirm_cmds = [
-            [0xe0, 0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            [0xe0, 0x11, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            [0xe0, 0x60, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [REPORT_ID, SET_SPEED_CMD, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [REPORT_ID, 0x11, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [REPORT_ID, 0x60, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
         ];
         for cmd in &confirm_cmds {
+            debug!("Sending confirmation command: {:02x?}", cmd);
             self.device.send_feature_report(cmd)?;
-            println!("Sent confirmation command: {:02x?}", cmd);
             sleep(Duration::from_millis(50));
         }
+        info!("Set zone {} to RGB({},{},{}) at {:.0}% brightness", fan, scaled_r, scaled_g, scaled_b, brightness);
         Ok(())
     }
 
@@ -183,48 +234,28 @@ impl FanController {
         if fan >= FAN_COUNT {
             return Err(FanControlError::InvalidFan(fan));
         }
-        let clamped_speed = speed.clamp(MIN_RPM, MAX_RPM);
-        if speed != clamped_speed {
-            return Err(FanControlError::InvalidSpeed(speed));
+        let min_rpm = self.model_config.min_rpm;
+        let max_rpm = self.model_config.max_rpm;
+        if speed < min_rpm || speed > max_rpm {
+            return Err(FanControlError::InvalidSpeed(speed, min_rpm, max_rpm));
         }
 
         let channel_byte = 0x10 << fan;
-        self.device.write(&[0xe0, 0x10, 0x31, channel_byte])?;
-        println!("Set fan {} to Manual mode", fan);
+        debug!("Setting zone {} to Manual mode", fan);
+        self.device.write(&[REPORT_ID, SET_SPEED_CMD, self.model_config.mode_byte, channel_byte])?;
         sleep(Duration::from_millis(200));
 
-        let speed_range = (MAX_RPM - MIN_RPM) as f32; // 1095
-        let speed_value = clamped_speed - MIN_RPM;
-        let speed_byte = ((speed_value as f32 / speed_range) * 255.0).min(255.0) as u8;
-        self.device.write(&[0xe0, (fan + 32) as u8, 0x00, speed_byte])?;
-        println!("Set fan {} speed to {} RPM", fan, clamped_speed);
+        let speed_range = (max_rpm - min_rpm) as f32;
+        let speed_value = (speed - min_rpm) as f32;
+        let speed_byte = if speed_range > 0.0 {
+            1 + ((speed_value / speed_range * 254.0).round() as u8)
+        } else {
+            1
+        };
+        debug!("Setting zone {} speed to {} RPM (byte: {})", fan, speed, speed_byte);
+        self.device.write(&[REPORT_ID, (fan + 32) as u8, 0x00, speed_byte])?;
         sleep(Duration::from_millis(100));
-
-        Ok(())
-    }
-
-    fn set_all_fans(&self, r: u8, g: u8, b: u8, brightness: f32, speed: u16, mode: &FanMode) -> Result<(), FanControlError> {
-        for fan in 0..FAN_COUNT {
-            self.set_fan_color(fan, r, g, b, brightness)?;
-            match mode {
-                FanMode::Fixed => {
-                    self.set_fan_speed(fan, speed)?;
-                }
-                FanMode::QuietCpu => {
-                    let cpu_temp = get_cpu_temp()?;
-                    let rpm = map_temp_to_rpm(cpu_temp);
-                    self.set_fan_speed(fan, rpm)?;
-                    println!("Fan {} synced to CPU temp {:.1}°C -> {} RPM", fan, cpu_temp, rpm);
-                }
-                FanMode::QuietGpu => {
-                    let gpu_temp = get_gpu_temp()?;
-                    let rpm = map_temp_to_rpm(gpu_temp);
-                    self.set_fan_speed(fan, rpm)?;
-                    println!("Fan {} synced to GPU temp {:.1}°C -> {} RPM", fan, gpu_temp, rpm);
-                }
-            }
-            sleep(Duration::from_millis(200));
-        }
+        info!("Set zone {} speed to {} RPM", fan, speed);
         Ok(())
     }
 }
@@ -243,21 +274,16 @@ fn parse_hex_color(hex: &str) -> Result<(u8, u8, u8), FanControlError> {
     Ok((r, g, b))
 }
 
-fn map_temp_to_rpm(temp: f32) -> u16 {
+fn map_temp_to_rpm(temp: f32, min_rpm: u16, max_rpm: u16) -> u16 {
     if temp <= 60.0 {
-        805  // Minimum RPM for quiet operation
-    } else if temp <= 80.0 {
-        let temp_range = 80.0 - 60.0; // 20°C
-        let rpm_range = 1000 - 805;   // 195 RPM
-        let rpm = 805.0 + ((temp - 60.0) / temp_range) * rpm_range as f32;
-        rpm.round() as u16
-    } else if temp <= 95.0 {
-        let temp_range = 95.0 - 80.0; // 15°C
-        let rpm_range = 1900 - 1000;  // 900 RPM
-        let rpm = 1000.0 + ((temp - 80.0) / temp_range) * rpm_range as f32;
-        rpm.round() as u16
+        min_rpm
+    } else if temp >= 95.0 {
+        max_rpm
     } else {
-        1900  // Maximum RPM for extreme temperatures
+        let temp_range = 95.0 - 60.0;
+        let rpm_range = max_rpm - min_rpm;
+        let rpm = min_rpm as f32 + ((temp - 60.0) / temp_range) * rpm_range as f32;
+        rpm.round() as u16
     }
 }
 
@@ -282,19 +308,18 @@ fn get_cpu_temp() -> Result<f32, FanControlError> {
 
     if !cpu_temps.is_empty() {
         let max_temp = cpu_temps.iter().fold(f32::MIN, |a, &b| a.max(b));
-        println!("Detected CPU temperature: {:.1}°C", max_temp);
+        info!("Detected CPU temperature: {:.1}°C", max_temp);
         Ok(max_temp)
     } else {
         let max_temp = components.iter()
             .filter_map(|c| c.temperature())
             .filter(|&t| t > 0.0)
             .fold(f32::MIN, |a, b| a.max(b));
-
         if max_temp > f32::MIN {
-            println!("No CPU sensors found; using highest temp: {:.1}°C", max_temp);
+            info!("No CPU sensors found; using highest temp: {:.1}°C", max_temp);
             Ok(max_temp)
         } else {
-            println!("No valid temperatures detected; defaulting to 50°C");
+            warn!("No valid temperatures detected; defaulting to 50°C");
             Ok(50.0)
         }
     }
@@ -304,7 +329,7 @@ fn get_gpu_temp() -> Result<f32, FanControlError> {
     if let Ok(nvml) = Nvml::init() {
         if let Ok(device) = nvml.device_by_index(0) {
             let temp = device.temperature(TemperatureSensor::Gpu)?;
-            println!("Detected NVIDIA GPU, temperature: {}°C", temp);
+            info!("Detected NVIDIA GPU, temperature: {}°C", temp);
             return Ok(temp as f32);
         }
     }
@@ -316,7 +341,7 @@ fn get_gpu_temp() -> Result<f32, FanControlError> {
                 if let Ok(temp_str) = fs::read_to_string(&entry) {
                     if let Ok(temp_millidegrees) = temp_str.trim().parse::<i32>() {
                         let temp = temp_millidegrees as f32 / 1000.0;
-                        println!("Detected AMD GPU, temperature: {}°C", temp);
+                        info!("Detected AMD GPU, temperature: {}°C", temp);
                         return Ok(temp);
                     }
                 }
@@ -324,64 +349,199 @@ fn get_gpu_temp() -> Result<f32, FanControlError> {
         }
     }
 
-    println!("No GPU temperature detected, using fallback 50°C");
+    warn!("No GPU temperature detected, using fallback 50°C");
     Ok(50.0)
+}
+
+fn get_effective_settings(
+    zone_config: Option<&ZoneConfig>,
+    global_config: Option<&GlobalConfig>,
+    args: &Args,
+    model_config: &ModelConfig,
+    _zone_num: u8,
+) -> EffectiveZoneSettings {
+    let enabled = zone_config.and_then(|z| z.enabled).unwrap_or(true);
+    if !enabled {
+        return EffectiveZoneSettings {
+            r: 0,
+            g: 0,
+            b: 0,
+            brightness: 0.0,
+            speed: model_config.min_rpm,
+            mode: FanMode::Fixed,
+        };
+    }
+    let (r, g, b) = get_rgb(zone_config, global_config, args);
+    let brightness = get_field(zone_config, global_config, args.brightness, |z| z.brightness, |g| g.brightness);
+    let speed = get_field(zone_config, global_config, args.speed, |z| z.speed, |g| g.speed);
+    let mode = get_field(zone_config, global_config, args.mode.clone(), |z| z.mode.clone(), |g| g.mode.clone());
+    EffectiveZoneSettings { r, g, b, brightness, speed, mode }
+}
+
+fn get_rgb(
+    zone_config: Option<&ZoneConfig>,
+    global_config: Option<&GlobalConfig>,
+    args: &Args,
+) -> (u8, u8, u8) {
+    if let Some(zone) = zone_config {
+        if let Some(color) = &zone.color {
+            if let Ok(rgb) = parse_hex_color(color) {
+                return rgb;
+            }
+        }
+        if let (Some(r), Some(g), Some(b)) = (zone.red, zone.green, zone.blue) {
+            return (r, g, b);
+        }
+    }
+    if let Some(global) = global_config {
+        if let Some(color) = &global.color {
+            if let Ok(rgb) = parse_hex_color(color) {
+                return rgb;
+            }
+        }
+        if let (Some(r), Some(g), Some(b)) = (global.red, global.green, global.blue) {
+            return (r, g, b);
+        }
+    }
+    (args.red, args.green, args.blue)
+}
+
+fn get_field<T, F, G>(
+    zone_config: Option<&ZoneConfig>,
+    global_config: Option<&GlobalConfig>,
+    default: T,
+    zone_fn: F,
+    global_fn: G,
+) -> T
+where
+    T: Clone,
+    F: Fn(&ZoneConfig) -> Option<T>,
+    G: Fn(&GlobalConfig) -> Option<T>,
+{
+    zone_config.and_then(|z| zone_fn(z)).or_else(|| global_config.and_then(|g| global_fn(g))).unwrap_or(default)
+}
+
+fn get_zone_config(config: &Option<Config>, zone_num: u8) -> Option<&ZoneConfig> {
+    config.as_ref().and_then(|c| match zone_num {
+        0 => c.zone_0.as_ref(),
+        1 => c.zone_1.as_ref(),
+        2 => c.zone_2.as_ref(),
+        3 => c.zone_3.as_ref(),
+        _ => None,
+    })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // Load config file if it exists, otherwise use CLI defaults
-    let (r, g, b, brightness, speed, mode) = match fs::read_to_string(&args.config) {
+    // Parse the config file
+    let config: Option<Config> = match fs::read_to_string(&args.config) {
         Ok(contents) => {
-            match toml::from_str::<Config>(&contents) {
-                Ok(config) => {
-                    let (r, g, b) = match config.color {
-                        Some(hex) => parse_hex_color(&hex)?,
-                        None => (
-                            config.red.unwrap_or(args.red),
-                            config.green.unwrap_or(args.green),
-                            config.blue.unwrap_or(args.blue),
-                        ),
-                    };
-                    (
-                        r,
-                        g,
-                        b,
-                        config.brightness.unwrap_or(args.brightness),
-                        config.speed,
-                        config.mode,
-                    )
-                }
+            match toml::from_str(&contents) {
+                Ok(config) => Some(config),
                 Err(e) => {
-                    println!("Failed to parse config file '{}': {}. Using CLI defaults.", args.config, e);
-                    (args.red, args.green, args.blue, args.brightness, args.speed, args.mode)
+                    eprintln!("Failed to parse config file '{}': {}. Using CLI defaults.", args.config, e);
+                    None
                 }
             }
         }
         Err(e) => {
-            println!("No config file found at '{}': {}. Using CLI defaults.", args.config, e);
-            (args.red, args.green, args.blue, args.brightness, args.speed, args.mode)
+            eprintln!("No config file found at '{}': {}. Using CLI defaults.", args.config, e);
+            None
         }
     };
 
-    let controller = FanController::open()?;
-    controller.send_init()?;
+    // Set log level with precedence: CLI > global config > default
+    let log_level_str = args.log_level.clone()
+        .or(config.as_ref().and_then(|c| c.global.as_ref()).and_then(|g| g.log_level.clone()))
+        .unwrap_or_else(|| "info".to_string());
+    let log_level = match log_level_str.as_str() {
+        "error" => LevelFilter::Error,
+        "warn" => LevelFilter::Warn,
+        "info" => LevelFilter::Info,
+        "debug" => LevelFilter::Debug,
+        "trace" => LevelFilter::Trace,
+        _ => {
+            eprintln!("Invalid log level '{}', defaulting to 'info'", log_level_str);
+            LevelFilter::Info
+        }
+    };
+    Builder::new().filter_level(log_level).init();
 
-    for fan in 0..FAN_COUNT {
-        controller.set_fan_color(fan, r, g, b, brightness)?;
+    // Open the fan controller
+    let controller = FanController::open()?;
+    if let Err(e) = controller.send_init() {
+        error!("Failed to initialize device: {}", e);
+        return Err(e.into());
     }
 
-    loop {
-        match &mode {
-            FanMode::Fixed => {
-                controller.set_all_fans(r, g, b, brightness, speed, &mode)?;
-                break;
+    // Set colors for all zones
+    for zone_num in 0..FAN_COUNT {
+        let zone_config = get_zone_config(&config, zone_num);
+        let effective_settings = get_effective_settings(
+            zone_config,
+            config.as_ref().and_then(|c| c.global.as_ref()),
+            &args,
+            &controller.model_config,
+            zone_num,
+        );
+        controller.set_fan_color(
+            zone_num,
+            effective_settings.r,
+            effective_settings.g,
+            effective_settings.b,
+            effective_settings.brightness,
+        )?;
+    }
+
+    // Set speeds for fixed mode zones
+    for zone_num in 0..FAN_COUNT {
+        let zone_config = get_zone_config(&config, zone_num);
+        let effective_settings = get_effective_settings(
+            zone_config,
+            config.as_ref().and_then(|c| c.global.as_ref()),
+            &args,
+            &controller.model_config,
+            zone_num,
+        );
+        if effective_settings.mode == FanMode::Fixed {
+            controller.set_fan_speed(zone_num, effective_settings.speed)?;
+        }
+    }
+
+    // Collect dynamic zones (QuietCpu or QuietGpu)
+    let dynamic_zones: Vec<(u8, EffectiveZoneSettings)> = (0..FAN_COUNT)
+        .filter_map(|zone_num| {
+            let zone_config = get_zone_config(&config, zone_num);
+            let settings = get_effective_settings(
+                zone_config,
+                config.as_ref().and_then(|c| c.global.as_ref()),
+                &args,
+                &controller.model_config,
+                zone_num,
+            );
+            if matches!(settings.mode, FanMode::QuietCpu | FanMode::QuietGpu) {
+                Some((zone_num, settings))
+            } else {
+                None
             }
-            FanMode::QuietCpu | FanMode::QuietGpu => {
-                controller.set_all_fans(r, g, b, brightness, speed, &mode)?;
-                sleep(Duration::from_secs(5));
+        })
+        .collect();
+
+    // If there are dynamic zones, enter a loop to update their speeds
+    if !dynamic_zones.is_empty() {
+        info!("Entering dynamic mode loop for zones: {:?}", dynamic_zones.iter().map(|(z, _)| z).collect::<Vec<_>>());
+        loop {
+            for (zone_num, settings) in &dynamic_zones {
+                let temp = match settings.mode {
+                    FanMode::QuietCpu => get_cpu_temp()?,
+                    FanMode::QuietGpu => get_gpu_temp()?,
+                    _ => unreachable!(),
+                };
+                let rpm = map_temp_to_rpm(temp, controller.model_config.min_rpm, controller.model_config.max_rpm);
+                controller.set_fan_speed(*zone_num, rpm)?;
             }
+            sleep(Duration::from_secs(5));
         }
     }
 
