@@ -183,6 +183,6 @@ MIT License – see LICENSE for details.
 
 # TODO
 
-- Support more lian li fans?
-- set color for individual zones.
+- Support more lian li fans
+- GTK UI
 
