@@ -21,10 +21,10 @@ A Rust-based daemon for controlling Lian Li UNI FAN SL-INF fans. Manage RGB ligh
 | Device                 | PID          | Status    | Set Fan RPM | Set Color    |
 |------------------------|--------------|-----------|-------------|--------------|
 | LianLi-UNI SL          | `7750, a100` | Supported | ✔️          | ✔️           | 
-| LianLi-UNI AL          | `a101`       | Untested  | ❓          | ❓           | 
-| LianLi-UNI SL-Infinity | `a102`       | Untested  | ❓          | ❓           | 
-| LianLi-UNI SL v2       | `a103, a105` | Untested  | ❓          | ❓           | 
-| LianLi-UNI AL v2       | `a104`       | Untested  | ❓          | ❓           | 
+| LianLi-UNI AL          | `a101`       | Untested  | ✔️          | ✔️           | 
+| LianLi-UNI SL-Infinity | `a102`       | Untested  | ✔️          | ✔️           | 
+| LianLi-UNI SL v2       | `a103, a105` | Untested  | ✔️          | ✔️           | 
+| LianLi-UNI AL v2       | `a104`       | Untested  | ✔️          | ✔️           | 
 
 --------------------------------------------------
 
